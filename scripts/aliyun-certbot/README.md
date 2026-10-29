@@ -103,5 +103,7 @@ post-cutover issuance verification are pending console security verification.
 Do not interpret the prepared policy file as evidence that the role has already
 been restricted. The updated Beijing manager successfully returned `not_due`
 (request `1-6ae2b12b-13614476-49de47de3fdd`) using the existing role permissions.
+Local security regression tests and GitHub CI passed (run `40807436066`, including
+the clean Node dependency check). DNS staging verification is still pending.
 The last verified public certificate expires 2027-01-27
 01:21:23 UTC (09:21:23 Beijing/Singapore).
