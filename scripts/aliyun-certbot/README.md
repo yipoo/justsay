@@ -1,5 +1,10 @@
 # JustSay certificate renewal in Beijing
 
+> RAM cutover is blocked by Alibaba Cloud console security verification. The
+> cloud functions were restored to the previously verified baseline from commit
+> `48d6d11`. The reduced-permission source below is a tested candidate for the
+> next deployment, not the currently active runtime.
+
 Both functions run in **cn-beijing (华北 2 / 北京)**, independently of MemoryAI.
 The original implementation came from [devsapp/fc-certbot](https://github.com/devsapp/fc-certbot),
 commit `4437a262051d2bc9593d92e2d48ea17bd597dd7f`. The maintained version removes
@@ -98,12 +103,14 @@ source and policy documents only. No cloud access key is stored in GitHub.
 
 ## Verification status
 
-The reduced-permission implementation is deployed to Beijing. RAM cutover and
-post-cutover issuance verification are pending console security verification.
+The reduced-permission candidate passed local tests and GitHub CI. RAM cutover
+and post-cutover issuance verification are pending console security verification.
+The original verified Beijing implementation remains the production baseline.
 Do not interpret the prepared policy file as evidence that the role has already
 been restricted. The updated Beijing manager successfully returned `not_due`
 (request `1-6ae2b12b-13614476-49de47de3fdd`) using the existing role permissions.
 Local security regression tests and GitHub CI passed (run `40807436066`, including
-the clean Node dependency check). DNS staging verification is still pending.
+the clean Node dependency check). DNS staging verification of the candidate did
+not produce a retained success result; it must be repeated before cutover.
 The last verified public certificate expires 2027-01-27
 01:21:23 UTC (09:21:23 Beijing/Singapore).
