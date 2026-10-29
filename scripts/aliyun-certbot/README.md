@@ -106,6 +106,9 @@ source and policy documents only. No cloud access key is stored in GitHub.
 The reduced-permission candidate passed local tests and GitHub CI. RAM cutover
 and post-cutover issuance verification are pending console security verification.
 The original verified Beijing implementation remains the production baseline.
+After restoration, its manager returned `done` successfully (request
+`1-6ae2b22a-13aa3785-17ee4e277317`), and public HTTPS `/health` returned HTTP 200
+and `{"ok":true}`. The FullAccess policies have not been detached.
 Do not interpret the prepared policy file as evidence that the role has already
 been restricted. The updated Beijing manager successfully returned `not_due`
 (request `1-6ae2b12b-13614476-49de47de3fdd`) using the existing role permissions.
