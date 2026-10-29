@@ -1,0 +1,111 @@
+name: Renew JustSay TLS certificate
+
+on:
+  schedule:
+    - cron: '37 2 * * *'
+  workflow_dispatch:
+    inputs:
+      staging_test:
+        description: Test DNS renewal against Let's Encrypt staging without replacing the live certificate
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: justsay-api-53kj-com-certificate
+  cancel-in-progress: false
+
+jobs:
+  certificate:
+    if: vars.CERT_DNS_AUTOMATION_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      ALIYUN_ACCESS_KEY_ID: ${{ secrets.ALIYUN_ACCESS_KEY_ID }}
+      ALIYUN_ACCESS_KEY_SECRET: ${{ secrets.ALIYUN_ACCESS_KEY_SECRET }}
+      CERT_STATE: /tmp/justsay-acme-state
+      STATE_ARCHIVE: /tmp/justsay-acme-state.enc
+      DNS_AUTOMATION_ENABLED: ${{ vars.CERT_DNS_AUTOMATION_ENABLED }}
+      ACME_STATE_ENCRYPTION_KEY: ${{ secrets.ACME_STATE_ENCRYPTION_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install certificate tooling
+        run: pip install -r scripts/certificates/requirements.txt
+      - name: Verify existing cloud access and target
+        run: python scripts/certificates/manage.py preflight
+      - name: Restore encrypted ACME account and certificates
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BOOTSTRAP_STATE: ${{ secrets.ACME_BOOTSTRAP_STATE }}
+        run: |
+          artifact_id=$(gh api "repos/$GITHUB_REPOSITORY/actions/artifacts?name=justsay-api-53kj-com-acme-state-v1&per_page=100" --jq '[.artifacts[] | select(.expired == false)] | sort_by(.created_at) | last | .id // empty')
+          if [ -n "$artifact_id" ]; then
+            gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$artifact_id/zip" > /tmp/acme-state.zip
+            unzip -p /tmp/acme-state.zip justsay-acme-state.enc > "$STATE_ARCHIVE"
+          elif [ -n "$BOOTSTRAP_STATE" ]; then
+            printf '%s' "$BOOTSTRAP_STATE" > "$STATE_ARCHIVE"
+          fi
+          python scripts/certificates/manage.py decrypt
+      - name: Issue or renew with Let's Encrypt
+        if: env.DNS_AUTOMATION_ENABLED == 'true' && !inputs.staging_test
+        run: |
+          umask 077
+          certbot certonly --manual --preferred-challenges dns \
+            --manual-auth-hook "python $PWD/scripts/certificates/manage.py dns-auth" \
+            --manual-cleanup-hook "python $PWD/scripts/certificates/manage.py dns-cleanup" \
+            --config-dir "$CERT_STATE/config" --work-dir "$CERT_STATE/work" \
+            --logs-dir "$CERT_STATE/logs" \
+            --server https://acme-v02.api.letsencrypt.org/directory \
+            --cert-name justsay.api.53kj.com -d justsay.api.53kj.com \
+            --key-type rsa --rsa-key-size 2048 \
+            --non-interactive --agree-tos --register-unsafely-without-email \
+            --keep-until-expiring
+      - name: Test automatic DNS renewal without deploying staging certificate
+        if: env.DNS_AUTOMATION_ENABLED == 'true' && inputs.staging_test
+        run: |
+          umask 077
+          certbot renew --dry-run --no-random-sleep-on-renew --cert-name justsay.api.53kj.com \
+            --manual-auth-hook "python $PWD/scripts/certificates/manage.py dns-auth" \
+            --manual-cleanup-hook "python $PWD/scripts/certificates/manage.py dns-cleanup" \
+            --config-dir "$CERT_STATE/config" --work-dir "$CERT_STATE/work" \
+            --logs-dir "$CERT_STATE/logs" \
+            --non-interactive --agree-tos --register-unsafely-without-email
+      - name: Deploy certificate to existing FC custom domain
+        if: '!inputs.staging_test'
+        run: python scripts/certificates/manage.py deploy
+      - name: Verify public HTTPS certificate and API health
+        run: python scripts/certificates/manage.py verify
+      - name: Encrypt ACME state
+        if: always()
+        run: python scripts/certificates/manage.py encrypt
+      - name: Preserve encrypted state for renewal
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: justsay-api-53kj-com-acme-state-v1
+          path: /tmp/justsay-acme-state.enc
+          if-no-files-found: ignore
+          retention-days: 90
+
+  public-health:
+    needs: certificate
+    if: always() && needs.certificate.result == 'skipped'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install certificate tooling
+        run: pip install -r scripts/certificates/requirements.txt
+      - name: Explain pending renewal setup
+        run: echo "Automatic renewal is disabled. Configure repository secrets and set CERT_DNS_AUTOMATION_ENABLED=true."
+      - name: Verify public HTTPS certificate and API health
+        run: python scripts/certificates/manage.py verify

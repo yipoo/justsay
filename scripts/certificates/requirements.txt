@@ -1,0 +1,5 @@
+alibabacloud-fc20230330==4.8.4
+alibabacloud-alidns20150109==4.6.1
+certbot==5.8.0
+cryptography==50.0.2
+dnspython==2.8.0

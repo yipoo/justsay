@@ -1,0 +1,19 @@
+{
+  "Version": "1",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": ["fc:GetCustomDomain", "fc:UpdateCustomDomain"],
+      "Resource": "acs:fc:cn-beijing:1722755712126869:custom-domains/justsay.api.53kj.com"
+    },
+    {
+      "Effect": "Allow",
+      "Action": [
+        "alidns:DescribeDomainRecords",
+        "alidns:AddDomainRecord",
+        "alidns:DeleteDomainRecord"
+      ],
+      "Resource": "acs:alidns:*:1722755712126869:domain/53kj.com"
+    }
+  ]
+}
