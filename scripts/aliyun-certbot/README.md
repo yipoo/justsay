@@ -1,75 +1,107 @@
-# JustSay Alibaba Cloud Certbot deployment
+# JustSay certificate renewal in Beijing
 
-Based on [devsapp/fc-certbot](https://github.com/devsapp/fc-certbot), upstream
-commit `4437a262051d2bc9593d92e2d48ea17bd597dd7f` (template 0.0.7).
+Both functions run in **cn-beijing (华北 2 / 北京)**, independently of MemoryAI.
+The original implementation came from [devsapp/fc-certbot](https://github.com/devsapp/fc-certbot),
+commit `4437a262051d2bc9593d92e2d48ea17bd597dd7f`. The maintained version removes
+the template's certificate-store dependency and deployment permissions.
 
-Runtime region for both functions: **`cn-beijing` (华北 2 / 北京)**.
-The original template project `justsay-certbot` was created in Hangzhou and is
-retained only as deployment history. Its Hangzhou and Singapore timers and
-on-demand functions have been disabled.
+## Runtime
 
-- Issuer function: `justsay-cert-generator`.
-- Rotation manager: `justsay-cert-domain-manager`.
-- Managed domain: `justsay.api.53kj.com` in `cn-beijing`.
-- Enabled timer: every day at 00:00 Asia/Shanghai (also 00:00 Singapore).
-- FC role created through the template: `fc-cap-role-73ha`.
+- Issuer: `justsay-cert-generator`, Python 3.10, Certbot/ACME 5.8.0.
+- Timer manager: `justsay-cert-domain-manager`, Node.js 20.
+- Domain: `justsay.api.53kj.com`; application function: `justsay-api` in Beijing.
+- Timer: `time-trigger`, `LATEST`, enabled daily at **00:00 Asia/Shanghai**
+  (also 00:00 Singapore).
+- Execution role: `fc-cap-role-73ha`.
 
-## Compatibility fixes
+The manager invokes only the Beijing issuer's `LATEST` version. The issuer checks
+the live trusted TLS certificate over public HTTPS. With at least seven days
+remaining, it returns `not_due` without cloud writes. When due, it uses DNS-01 to
+issue a production certificate, updates only the exact Beijing domain's
+`certConfig`, and verifies the live certificate serial number.
 
-The upstream template pins Certbot 2.11.1 but permits newer ACME/OpenSSL
-dependencies. Its first invocation failed with `OpenSSL.crypto.X509Req` missing.
-The JustSay package pins Certbot and ACME to 5.8.0, with cryptography 50.0.2.
-RSA PKCS#1 conversion uses Python cryptography, independent of the host OpenSSL
-command's default output format.
+No certificate is uploaded to CAS. The role no longer needs certificate-store
+list, download, upload, or delete permissions. Function responses contain status
+and expiry metadata only, never private keys. Certbot runs in a separate process;
+SDK debug output and raw exception requests are not printed. Temporary ACME files
+are deleted after the invocation.
 
-The issuer rejects other hostnames. The manager checks only Beijing and filters
-the exact JustSay domain before making any certificate changes. It keeps the
-upstream `devs-certbot-generated-` certificate naming scheme so automatic rotation
-can recognize the managed certificate. Certificates become due when fewer than
-seven days remain, matching the upstream template.
+## Least-privilege policy
 
-## Build and deploy
+[`ram-policy.json`](ram-policy.json) is the intended replacement for the template's
+three broad policies (`AliyunDNSFullAccess`, `AliyunFCFullAccess`, and
+`AliyunYundunCertFullAccess`). Its five allowed actions are:
 
-Use `build.sh /absolute/output/directory` to prepare Linux x86_64 Python 3.10
-and Node.js ZIP packages. Upload `cert-generator.zip` to the issuer function and
-`cert-domain-manager.zip` to the manager function using FC's ZIP upload UI.
-The source also suppresses SDK debug logging after Certbot runs, because
-upstream debug output can include certificate private keys in upload requests.
-No secrets are included in these packages; FC injects temporary role credentials.
+| Actions | Resource scope |
+| --- | --- |
+| `fc:InvokeFunction` | `justsay-cert-generator/LATEST`, Beijing only |
+| `fc:UpdateCustomDomain` | `justsay.api.53kj.com`, Beijing only |
+| `alidns:DescribeDomainRecords`, `alidns:AddDomainRecord`, `alidns:DeleteDomainRecord` | DNS zone `53kj.com` only |
 
-The sources in this directory are the maintained copies. Redeploying the original
-unmodified template would overwrite the compatibility fixes and domain filter.
+There are no wildcard resource grants, RAM permissions, code/deployment changes,
+function/trigger creation or deletion, other-domain FC updates, or CAS access.
 
-After deploying, invoke the issuer with:
+**DNS authorization boundary:** Alibaba Cloud DNS grants these APIs at hosted-zone
+granularity, not individual TXT record granularity. The policy therefore permits
+those three actions within `53kj.com`; the hook additionally restricts changes to
+`_acme-challenge.justsay.api` and the exact current order value. It never updates
+an existing record or deletes unrelated TXT values. This is not a claim that RAM
+itself isolates one TXT record. See the official
+[DNS policy reference](https://help.aliyun.com/en/dns/alibaba-cloud-dns-custom-permission-policy-reference-dns)
+and [FC policy resource reference](https://help.aliyun.com/en/functioncompute/policies-and-sample-policies).
 
-```json
-{"domainName":"justsay.api.53kj.com"}
+## Deploy and verify
+
+```sh
+scripts/aliyun-certbot/build.sh /absolute/output/directory
 ```
 
-Select the resulting `devs-certbot-generated-*` certificate in the Beijing FC
-custom-domain certificate configuration. Then invoke the manager with `{}` and
-confirm success before relying on its daily timer. Verify trusted HTTPS and
-`https://justsay.api.53kj.com/health` after binding.
+Upload `cert-generator.zip` and `cert-domain-manager.zip` to the corresponding
+Beijing functions. The original gallery project remains as history only; its
+Hangzhou and Singapore timers/functions were disabled. Do not redeploy the
+unmodified gallery template, which would restore broader behavior.
 
-## Verified deployment (2026-10-29)
+Create/attach the exact custom RAM policy to the execution role and detach all
+three FullAccess policies. Administrative deployment uses the signed-in console
+account; the runtime role does not need to deploy its own code or manage RAM.
 
-Both functions are deployed in Beijing. The issuer successfully issued certificate
-`28151503`, named `devs-certbot-generated-justsay-beijing`, and the Beijing custom
-domain uses it. Manual invocation of the Beijing manager returned `done` (request
-`1-6ae2adbf-13e56b67-1c86f5daefd3`). The enabled Beijing trigger is `time-trigger`,
-with expression `CRON_TZ=Asia/Shanghai 0 0 0 * * *` on `LATEST`.
+Issuer test events:
 
-Public TLS verification confirmed Let's Encrypt YR1 and expiry **2027-01-27
-01:21:23 UTC** (09:21:23 Beijing/Singapore). `/health` returned HTTP 200 and
-`{"ok":true}`. The migration checked that route, protocol, authentication, TLS
-and WAF settings were preserved. The next scheduled run is separate from the
-successful manual verification; no scheduled execution is claimed yet.
+- `{}`: ordinary daily check, no issuance unless fewer than seven days remain.
+- `{"action":"dry_run"}`: real DNS-01 issuance against Let's Encrypt **staging**;
+  never installs the untrusted certificate.
+- `{"action":"force_renew"}`: maintenance-only production issuance and binding.
+  Use sparingly because Let's Encrypt rate limits apply.
 
-The unused initial test certificate was revoked after upstream SDK debug logs
-exposed its key. The deployed logging fix suppresses that upload debug output.
-`scripts/aliyun-certbot/cert-generator/migration.py` records the completed one-time
-migration and is guarded to run only in the original Hangzhou function. Do not
-run it as part of ordinary Beijing renewal or future deployments.
+Invoke the manager with `{}` after applying the restricted policy. A successful
+`not_due` check verifies invocation and public TLS, but does **not** prove DNS or
+certificate-update permissions. Verify a complete renewal under the restricted
+policy and confirm trusted HTTPS and `/health` before declaring the cutover done.
 
-GitHub's alternative `certificate.yml` remains disabled to avoid a duplicate
-renewal scheduler. No MemoryAI functions or certificate state are shared.
+Tests:
+
+```sh
+uv run --no-project --with-requirements scripts/aliyun-certbot/cert-generator/requirements.txt \
+  python -m unittest discover -s scripts/aliyun-certbot/tests -v
+```
+
+A clean extracted Node package must also import `index.js` successfully; all
+runtime imports are explicit dependencies.
+
+## GitHub state
+
+The alternative GitHub renewal workflow is disabled, with
+`CERT_DNS_AUTOMATION_ENABLED=false`. Both unused Secrets,
+`ACME_BOOTSTRAP_STATE` and `ACME_STATE_ENCRYPTION_KEY`, were deleted on 2026-10-29;
+GitHub reported zero remaining repository Secrets. The public repository contains
+source and policy documents only. No cloud access key is stored in GitHub.
+
+## Verification status
+
+The reduced-permission implementation is deployed to Beijing. RAM cutover and
+post-cutover issuance verification are pending console security verification.
+Do not interpret the prepared policy file as evidence that the role has already
+been restricted. The updated Beijing manager successfully returned `not_due`
+(request `1-6ae2b12b-13614476-49de47de3fdd`) using the existing role permissions.
+The last verified public certificate expires 2027-01-27
+01:21:23 UTC (09:21:23 Beijing/Singapore).

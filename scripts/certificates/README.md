@@ -36,7 +36,11 @@ Required repository Secrets:
 - `ACME_STATE_ENCRYPTION_KEY`: an independent random encryption secret.
 - `ACME_BOOTSTRAP_STATE`: encrypted initial Certbot account and certificate state.
 
-The two ACME secrets can be generated from the existing local JustSay Certbot
+The two previously configured ACME Secrets were deleted on 2026-10-29 because
+the Alibaba Cloud deployment does not use GitHub state. They are not currently
+present in this repository.
+
+If this alternative is explicitly reactivated, the two ACME secrets can be generated from the existing local JustSay Certbot
 configuration with `bootstrap.py`. Set `ACME_STATE_ENCRYPTION_KEY` and
 `STATE_ARCHIVE` in the environment, then run:
 

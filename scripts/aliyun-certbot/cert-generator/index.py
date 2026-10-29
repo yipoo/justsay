@@ -1,87 +1,125 @@
-# -*- coding: utf-8 -*-
-import logging
-import json
-import certbot.main
-import os
-import subprocess
+"""Renew one Beijing FC domain without access to the account's certificate store."""
 import datetime
-from cas.index import upload_cert, get_cert_by_name
-from alidns.index import check_if_valid_domain
+import json
+import logging
+import os
+from pathlib import Path
+import socket
+import ssl
+import subprocess
+import sys
+import tempfile
+import time
+
+from cryptography import x509
+from cryptography.hazmat.primitives import serialization
+from alibabacloud_fc20230330.client import Client
+from alibabacloud_fc20230330 import models
+from alibabacloud_tea_openapi.models import Config
+
+DOMAIN = "justsay.api.53kj.com"
+REGION = "cn-beijing"
+ACCOUNT = "1722755712126869"
+CERT_NAME = "devs-certbot-generated-justsay-beijing"
+PRODUCTION = "https://acme-v02.api.letsencrypt.org/directory"
+STAGING = "https://acme-staging-v02.api.letsencrypt.org/directory"
 
 
-def check_if_less_than_seven_days(x):
-    d = datetime.datetime.strptime(x, "%Y-%m-%d")
-    now = datetime.datetime.now()
-    return (d - now).days < 7
-
-
-def handler(event, context):
-    evt = json.loads(event)
-    if evt.get("action") == "migrate_to_beijing":
-        from migration import run
-        return run(context)
-    domainName = evt.get("domainName")
-    if domainName is not None:
-        if domainName.startswith("https://") or domainName.startswith("http://"):
-            domainName = domainName.split("://")[1]
-        os.environ["DEVS_DOMAIN"] = domainName
-    if domainName != "justsay.api.53kj.com":
-        raise ValueError("This function only manages justsay.api.53kj.com")
-    certName = evt.get("certName")
-    certificate_id = None
-    if certName is not None:
-        cert = get_cert_by_name(certName)
-        if cert is not None:
-            if cert.common != domainName:
-                raise Exception("domainName and cert common name do not match")
-            if check_if_less_than_seven_days(cert.end_date):
-                certificate_id = cert.id
-            else:
-                print("Cert will not expire in 7 days")
-                return cert.id
-    if domainName is None:
-        raise Exception("no domainName provided")
-    check_if_valid_domain()
-    certbot_args = [
-        "certonly",
-        "--manual",
-        "--quiet",
-        "--non-interactive",
-        "--agree-tos",
-        "--manual-auth-hook",
-        "/code/scripts/authenticator.sh",
-        "--manual-cleanup-hook",
-        "/code/scripts/cleanup.sh",
-        "--preferred-challenges",
-        "dns",
-        "--key-type",
-        "rsa",
-        "--cert-name",
-        domainName,
-        "--email",
-        "your_mail@mail.com",
-        "--server",
-        "https://acme-v02.api.letsencrypt.org/directory",
-        "--domains",
-        domainName,
-    ]
-    certbot.main.main(certbot_args)
-    # Certbot changes logging levels; never let SDK HTTP debug logs expose keys.
+def quiet_logs():
     logging.getLogger().setLevel(logging.WARNING)
     for logger in list(logging.Logger.manager.loggerDict.values()):
         if isinstance(logger, logging.Logger):
             logger.setLevel(logging.WARNING)
-    print("cert generated")
-    exitCode = subprocess.call("/code/scripts/upload-certs.sh")
-    if exitCode == 0:
-        cert, key, cert_id = upload_cert(
-            "/etc/letsencrypt/live/" + domainName + "/fullchain.pem",
-            "/etc/letsencrypt/live/" + domainName + "/privkey.pkcs1.pem",
-            domainName,
-            certName,
-            certificate_id,
-        )
-        print("cert uploaded to cas successfully")
-        return cert_id
-    else:
-        raise Exception("failed to upload certs")
+
+
+def live_certificate():
+    with socket.create_connection((DOMAIN, 443), timeout=20) as raw:
+        with ssl.create_default_context().wrap_socket(raw, server_hostname=DOMAIN) as tls:
+            return x509.load_der_x509_certificate(tls.getpeercert(binary_form=True))
+
+
+def fc():
+    return Client(Config(
+        access_key_id=os.environ["ALIBABA_CLOUD_ACCESS_KEY_ID"],
+        access_key_secret=os.environ["ALIBABA_CLOUD_ACCESS_KEY_SECRET"],
+        security_token=os.environ["ALIBABA_CLOUD_SECURITY_TOKEN"],
+        endpoint=f"{ACCOUNT}.{REGION}.fc.aliyuncs.com", region_id=REGION,
+        connect_timeout=30000, read_timeout=60000))
+
+
+def validate_material(chain, key):
+    cert = x509.load_pem_x509_certificate(chain.encode())
+    names = cert.extensions.get_extension_for_class(x509.SubjectAlternativeName).value
+    if names.get_values_for_type(x509.DNSName) != [DOMAIN]:
+        raise ValueError("Unexpected certificate names")
+    private_key = serialization.load_pem_private_key(key.encode(), password=None)
+    if private_key.public_key().public_numbers() != cert.public_key().public_numbers():
+        raise ValueError("Certificate and key do not match")
+    if cert.not_valid_after_utc <= datetime.datetime.now(datetime.timezone.utc):
+        raise ValueError("Certificate has expired")
+    pkcs1 = private_key.private_bytes(
+        serialization.Encoding.PEM, serialization.PrivateFormat.TraditionalOpenSSL,
+        serialization.NoEncryption()).decode()
+    return cert, pkcs1
+
+
+def issue(root, staging):
+    env = dict(os.environ, DEVS_DOMAIN=DOMAIN)
+    args = [sys.executable, "-c", "import sys, certbot.main; sys.exit(certbot.main.main())",
+            "certonly", "--manual",
+            "--preferred-challenges", "dns", "--manual-auth-hook",
+            "/code/scripts/authenticator.sh", "--manual-cleanup-hook",
+            "/code/scripts/cleanup.sh", "--config-dir", str(root / "config"),
+            "--work-dir", str(root / "work"), "--logs-dir", str(root / "logs"),
+            "--cert-name", DOMAIN, "--domains", DOMAIN, "--key-type", "rsa",
+            "--rsa-key-size", "2048", "--non-interactive", "--agree-tos",
+            "--register-unsafely-without-email", "--quiet", "--server",
+            STAGING if staging else PRODUCTION]
+    # Separate process prevents Certbot from enabling SDK upload debug logs.
+    result = subprocess.run(args, env=env, capture_output=True, timeout=700)
+    if result.returncode:
+        raise RuntimeError(f"Certbot DNS validation failed (exit {result.returncode})")
+    folder = root / "config" / "live" / DOMAIN
+    return (folder / "fullchain.pem").read_text(), (folder / "privkey.pem").read_text()
+
+
+def handler(event, context):
+    quiet_logs()
+    if context.region != REGION:
+        raise ValueError("Renewal must run in cn-beijing")
+    evt = json.loads(event or b"{}")
+    if evt.get("domainName", DOMAIN) != DOMAIN:
+        raise ValueError("Unexpected domain")
+    action = evt.get("action", "check")
+    if action not in ("check", "dry_run", "force_renew"):
+        raise ValueError("Unsupported action")
+    if action == "check":
+        try:
+            current = live_certificate()
+        except ssl.SSLCertVerificationError as error:
+            if error.verify_code != 10:
+                raise RuntimeError("Live TLS verification failed") from None
+        else:
+            remaining = current.not_valid_after_utc - datetime.datetime.now(datetime.timezone.utc)
+            if remaining.total_seconds() >= 7 * 86400:
+                return {"domain": DOMAIN, "region": REGION, "status": "not_due",
+                        "expires": current.not_valid_after_utc.isoformat()}
+    with tempfile.TemporaryDirectory(prefix="justsay-acme-") as folder:
+        chain, key = issue(Path(folder), action == "dry_run")
+        cert, pkcs1 = validate_material(chain, key)
+        if action == "dry_run":
+            return {"domain": DOMAIN, "region": REGION, "status": "staging_validated",
+                    "deployed": False}
+        quiet_logs()
+        try:
+            fc().update_custom_domain(DOMAIN, models.UpdateCustomDomainRequest(
+                body=models.UpdateCustomDomainInput(cert_config=models.CertConfig(
+                    cert_name=CERT_NAME, certificate=chain, private_key=pkcs1))))
+        except Exception:
+            raise RuntimeError("Updating the Beijing domain certificate failed") from None
+        for _ in range(24):
+            if live_certificate().serial_number == cert.serial_number:
+                return {"domain": DOMAIN, "region": REGION, "status": "renewed",
+                        "expires": cert.not_valid_after_utc.isoformat()}
+            time.sleep(5)
+        raise RuntimeError("Live certificate did not update before verification timed out")

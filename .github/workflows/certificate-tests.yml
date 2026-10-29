@@ -2,9 +2,9 @@ name: Test certificate automation
 
 on:
   push:
-    paths: ['scripts/certificates/**', '.github/workflows/certificate*.yml']
+    paths: ['scripts/certificates/**', 'scripts/aliyun-certbot/**', '.github/workflows/certificate*.yml']
   pull_request:
-    paths: ['scripts/certificates/**', '.github/workflows/certificate*.yml']
+    paths: ['scripts/certificates/**', 'scripts/aliyun-certbot/**', '.github/workflows/certificate*.yml']
 
 permissions:
   contents: read
@@ -20,3 +20,21 @@ jobs:
           python-version: '3.12'
       - run: pip install -r scripts/certificates/requirements.txt
       - run: python -m unittest discover -s scripts/certificates -p 'test_*.py' -v
+
+  beijing-renewal:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - run: pip install -r scripts/aliyun-certbot/cert-generator/requirements.txt
+      - run: python -m unittest discover -s scripts/aliyun-certbot/tests -v
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+        working-directory: scripts/aliyun-certbot/fc-domain-manager
+      - run: node -e 'require("./index.js").handler({}, {region:"cn-hangzhou"}).then(() => process.exit(1)).catch(e => {if(e.message!=="Expected cn-beijing") throw e;})'
+        working-directory: scripts/aliyun-certbot/fc-domain-manager

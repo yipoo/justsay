@@ -17,6 +17,7 @@ uv pip install --target "$package_root/generator/python" \
   -r "$source_root/cert-generator/requirements.txt"
 cp -R "$source_root/fc-domain-manager" "$package_root/manager"
 npm ci --prefix "$package_root/manager" --ignore-scripts --no-audit --no-fund
+(cd "$package_root/manager" && node -e 'require("./index.js")')
 python3 - "$package_root" "$output_root" <<'PY'
 from pathlib import Path
 import sys
