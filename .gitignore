@@ -4,3 +4,5 @@ __pycache__/
 *.pem
 *.key
 *.enc
+node_modules/
+scripts/aliyun-certbot/build/

@@ -1,0 +1,52 @@
+edition: 3.0.0
+name: justsay-certbot-beijing
+access: default
+vars:
+  role: acs:ram::1722755712126869:role/fc-cap-role-73ha
+resources:
+  cert-generator:
+    component: fc3
+    props:
+      region: cn-beijing
+      functionName: justsay-cert-generator
+      runtime: python3.10
+      handler: index.handler
+      role: ${vars.role}
+      timeout: 900
+      cpu: 1
+      memorySize: 2048
+      diskSize: 10240
+      internetAccess: true
+      instanceConcurrency: 1
+      description: JustSay certificate automation; managed from yipoo/justsay
+      environmentVariables:
+        PYTHONPATH: /opt/python:/code/python:/code
+      # Run build.sh and unzip cert-generator.zip into build/generator first.
+      code: ./build/generator
+  cert-domain-manager:
+    component: fc3
+    props:
+      region: cn-beijing
+      functionName: justsay-cert-domain-manager
+      runtime: nodejs20
+      handler: index.handler
+      role: ${vars.role}
+      timeout: 900
+      cpu: 2
+      memorySize: 4096
+      diskSize: 10240
+      internetAccess: true
+      instanceConcurrency: 1
+      description: JustSay certificate automation; managed from yipoo/justsay
+      environmentVariables:
+        CUSTOM_DOMAIN_REGIONS: cn-beijing
+        CERT_GENERATOR_FUNCTION_NAME: justsay-cert-generator
+      code: ./build/manager
+      triggers:
+        - triggerName: time-trigger
+          qualifier: LATEST
+          triggerType: timer
+          triggerConfig:
+            payload: ""
+            cronExpression: CRON_TZ=Asia/Shanghai 0 0 0 * * *
+            enable: true
