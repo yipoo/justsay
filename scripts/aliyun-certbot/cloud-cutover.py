@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import socket
 import ssl
 import subprocess
@@ -87,7 +88,9 @@ def deploy(name, package):
 
 
 def invoke(name, event):
-    result = fc('POST', '/functions/' + name + '/invocations?qualifier=LATEST', event)
+    # Unqualified admin invocation resolves to LATEST. The timer's role invocation
+    # separately specifies LATEST and exercises the restricted resource ARN.
+    result = fc('POST', '/functions/' + name + '/invocations', event)
     if not isinstance(result, dict) or 'errorMessage' in result:
         # Only known status categories from our function are safe to display.
         category = 'runtime_error'
@@ -95,6 +98,10 @@ def invoke(name, event):
             message = result.get('errorMessage', '')
             category = next((c for c in ('AccessDenied', 'NoPermission', 'Forbidden',
                             'ModuleNotFoundError', 'NXDOMAIN', 'Timeout') if c in message), category)
+            if category == 'AccessDenied':
+                say('invocation_denied', function=name,
+                    actions=sorted(set(re.findall(r'fc:[A-Za-z]+', message))),
+                    resources=sorted(set(re.findall(r'acs:fc:[A-Za-z0-9:/_.-]+', message))))
         raise RuntimeError('Invocation failed for ' + name + ': ' + category)
     say('invoked', function=name, result=result)
     return result
@@ -123,6 +130,8 @@ def main():
     global BACKUP
     parser = argparse.ArgumentParser()
     parser.add_argument('--apply', action='store_true')
+    parser.add_argument('--verify-only', action='store_true',
+                        help='Recheck invocation after a previously completed production renewal')
     args = parser.parse_args()
     os.umask(0o077)
     identity = cli(['sts', 'GetCallerIdentity'])
@@ -186,12 +195,13 @@ def main():
             time.sleep(10)
         else:
             raise RuntimeError('Runtime permissions are still broader than expected')
-        if invoke(ISSUER, {'action': 'dry_run'}).get('status') != 'staging_validated':
-            raise RuntimeError('Staging validation failed')
-        if dns_records() != initial_records:
-            raise RuntimeError('DNS staging validation records were not cleaned up')
-        if invoke(ISSUER, {'action': 'force_renew'}).get('status') != 'renewed':
-            raise RuntimeError('Production renewal failed')
+        if not args.verify_only:
+            if invoke(ISSUER, {'action': 'dry_run'}).get('status') != 'staging_validated':
+                raise RuntimeError('Staging validation failed')
+            if dns_records() != initial_records:
+                raise RuntimeError('DNS staging validation records were not cleaned up')
+            if invoke(ISSUER, {'action': 'force_renew'}).get('status') != 'renewed':
+                raise RuntimeError('Production renewal failed')
         if invoke(MANAGER, {}).get('status') != 'not_due':
             raise RuntimeError('Daily manager check failed')
         after = fc('GET', domain_path)
@@ -199,17 +209,23 @@ def main():
             if before.get(field) != after.get(field):
                 raise RuntimeError('Domain setting changed outside certificate configuration')
         live = health()
-        if live['sha256'] == baseline['sha256'] or dns_records() != initial_records:
+        if (not args.verify_only and live['sha256'] == baseline['sha256']) or dns_records() != initial_records:
             raise RuntimeError('Renewal or DNS cleanup was not confirmed')
         if policies() != {('Custom', POLICY)}:
             raise RuntimeError('Role policy verification failed')
         say('complete', domain=DOMAIN, region=REGION, policy=POLICY, live=live,
-            timer_enabled=True, backup=str(BACKUP))
+            timer_enabled=True, production_renewed=not args.verify_only, backup=str(BACKUP))
     except BaseException:
         say('rollback_started')
         for name in BROAD:
             if ('System', name) in original_policies:
                 attach(name)
+        restore = {field: before[field] for field in
+                   ('routeConfig', 'protocol', 'authConfig', 'tlsConfig', 'wafConfig')
+                   if before.get(field) is not None}
+        if before.get('certConfig', {}).get('privateKey'):
+            restore['certConfig'] = before['certConfig']
+        fc('PUT', domain_path, restore)
         for name in packages:
             deploy(name, BACKUP / (name + '.zip'))
         if ('Custom', POLICY) not in original_policies:

@@ -4,7 +4,7 @@
     {
       "Effect": "Allow",
       "Action": "fc:InvokeFunction",
-      "Resource": "acs:fc:cn-beijing:1722755712126869:functions/justsay-cert-generator/LATEST"
+      "Resource": "acs:fc:cn-beijing:1722755712126869:functions/justsay-cert-generator"
     },
     {
       "Effect": "Allow",
@@ -13,7 +13,11 @@
     },
     {
       "Effect": "Allow",
-      "Action": ["alidns:DescribeDomainRecords", "alidns:AddDomainRecord", "alidns:DeleteDomainRecord"],
+      "Action": [
+        "alidns:DescribeDomainRecords",
+        "alidns:AddDomainRecord",
+        "alidns:DeleteDomainRecord"
+      ],
       "Resource": "acs:alidns::1722755712126869:domain/53kj.com"
     }
   ]

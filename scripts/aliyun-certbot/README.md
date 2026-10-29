@@ -1,9 +1,10 @@
 # JustSay certificate renewal in Beijing
 
-> RAM cutover is blocked by Alibaba Cloud console security verification. The
-> cloud functions were restored to the previously verified baseline from commit
-> `48d6d11`. The reduced-permission source below is a tested candidate for the
-> next deployment, not the currently active runtime.
+> Active and verified on 2026-10-29. The execution role now has only custom
+> policy `JustSayCertificateRenewalBeijing` (default version `v2`). All three
+> template FullAccess policies have been detached. Cutover used signed CLI API
+> calls from Alibaba Cloud Shell's existing identity; no long-lived AccessKey
+> was created or exported.
 
 Both functions run in **cn-beijing (华北 2 / 北京)**, independently of MemoryAI.
 The original implementation came from [devsapp/fc-certbot](https://github.com/devsapp/fc-certbot),
@@ -33,13 +34,13 @@ are deleted after the invocation.
 
 ## Least-privilege policy
 
-[`ram-policy.json`](ram-policy.json) is the intended replacement for the template's
+[`ram-policy.json`](ram-policy.json) is the active replacement for the template's
 three broad policies (`AliyunDNSFullAccess`, `AliyunFCFullAccess`, and
 `AliyunYundunCertFullAccess`). Its five allowed actions are:
 
 | Actions | Resource scope |
 | --- | --- |
-| `fc:InvokeFunction` | `justsay-cert-generator/LATEST`, Beijing only |
+| `fc:InvokeFunction` | `justsay-cert-generator`, Beijing only; the timer invokes `LATEST` |
 | `fc:UpdateCustomDomain` | `justsay.api.53kj.com`, Beijing only |
 | `alidns:DescribeDomainRecords`, `alidns:AddDomainRecord`, `alidns:DeleteDomainRecord` | DNS zone `53kj.com` only |
 
@@ -70,9 +71,34 @@ Create/attach the exact custom RAM policy to the execution role and detach all
 three FullAccess policies. Administrative deployment uses the signed-in console
 account; the runtime role does not need to deploy its own code or manage RAM.
 
+For CLI maintenance, prepare the two ZIP packages and a `manifest.json` mapping
+package filenames to their SHA-256 digests in a private working folder alongside
+`cloud-cutover.py` and `ram-policy.json`. Run in Cloud Shell, which supplies its
+own temporary CLI identity:
+
+```sh
+python3 cloud-cutover.py             # read-only target, policy and health checks
+python3 cloud-cutover.py --apply     # backup, restrict, deploy, issue and verify
+```
+
+The script guards the account, role, Beijing domain route and timer, verifies the
+policy document and package hashes, and backs up deployed code privately before
+changing anything. It restores prior permissions, code and domain settings if
+verification fails. `--apply --verify-only` is for checking an invocation-policy
+fix **after** a completed production renewal; it does not repeat DNS issuance or
+prove those write permissions by itself. Private rollback backups remain outside
+Git in the temporary Cloud Shell VM.
+
+FC authorizes the function invocation against the function ARN without a version
+suffix in this deployment. The policy grants that exact function ARN; using only
+`/LATEST` caused an invocation denial. The manager still explicitly invokes
+`LATEST`. The isolation probe must actually receive an access denial when trying
+`fc:ListFunctions`, rather than treating arbitrary network failures as a pass.
+
 Issuer test events:
 
 - `{}`: ordinary daily check, no issuance unless fewer than seven days remain.
+- `{"action":"verify_isolation"}`: confirm `fc:ListFunctions` is denied; metadata only.
 - `{"action":"dry_run"}`: real DNS-01 issuance against Let's Encrypt **staging**;
   never installs the untrusted certificate.
 - `{"action":"force_renew"}`: maintenance-only production issuance and binding.
@@ -101,19 +127,21 @@ The alternative GitHub renewal workflow is disabled, with
 GitHub reported zero remaining repository Secrets. The public repository contains
 source and policy documents only. No cloud access key is stored in GitHub.
 
-## Verification status
+## Verified deployment (2026-10-29)
 
-The reduced-permission candidate passed local tests and GitHub CI. RAM cutover
-and post-cutover issuance verification are pending console security verification.
-The original verified Beijing implementation remains the production baseline.
-After restoration, its manager returned `done` successfully (request
-`1-6ae2b22a-13aa3785-17ee4e277317`), and public HTTPS `/health` returned HTTP 200
-and `{"ok":true}`. The FullAccess policies have not been detached.
-Do not interpret the prepared policy file as evidence that the role has already
-been restricted. The updated Beijing manager successfully returned `not_due`
-(request `1-6ae2b12b-13614476-49de47de3fdd`) using the existing role permissions.
-Local security regression tests and GitHub CI passed (run `40807436066`, including
-the clean Node dependency check). DNS staging verification of the candidate did
-not produce a retained success result; it must be repeated before cutover.
-The last verified public certificate expires 2027-01-27
-01:21:23 UTC (09:21:23 Beijing/Singapore).
+- Both functions are deployed to Beijing, using the restricted role.
+- RAM lists only custom policy `JustSayCertificateRenewalBeijing`; no FullAccess
+  policy remains attached. The five actions and resource scopes are in the JSON.
+- Real DNS-01 staging issuance and production issuance/binding succeeded with the
+  restricted DNS and domain-update permissions. DNS records were cleaned up.
+- After correcting the invocation ARN, a fresh restricted runtime confirmed that
+  `fc:ListFunctions` is denied, and the daily manager returned `not_due` normally.
+  A second production order was deliberately avoided during this invocation fix.
+- The enabled timer remains daily at 00:00 Beijing/Singapore. This verifies manual
+  execution of its function chain; it does not claim a scheduled run has occurred.
+- Public HTTPS trusts Let's Encrypt **YR2**, serial
+  `06D08AA856D767134B8263A75F43657CE9B9`, expiring **2027-01-27 02:05:24 UTC**
+  (**10:05:24 Beijing/Singapore**). `/health` returned HTTP 200 and `{"ok":true}`.
+- Route, protocol, authentication, TLS and WAF settings were checked and preserved.
+- Seven local regression tests and GitHub CI passed. GitHub retains zero repository
+  Secrets, and the alternative renewal workflow remains manually disabled.
