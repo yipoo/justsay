@@ -1,5 +1,12 @@
 # JustSay HTTPS certificate automation
 
+> Current choice (2026-10-29): use the Alibaba Cloud FC Certbot template for
+> renewal. This GitHub implementation is retained as an alternative. Its
+> `certificate.yml` workflow is manually disabled and
+> `CERT_DNS_AUTOMATION_ENABLED=false`; do not enable a second renewal scheduler
+> while the Alibaba Cloud process manages the domain. Cloud deployment is being
+> configured and still requires successful execution and verification.
+
 This is an independent copy of the MemoryAI Certbot workflow, adapted for:
 
 | Setting | Value |
