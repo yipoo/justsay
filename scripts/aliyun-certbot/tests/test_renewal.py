@@ -16,14 +16,14 @@ import index as renewal
 from alidns import index as dns_hook
 
 
-def material(domain=renewal.DOMAIN):
+def material(domain=renewal.DOMAIN, days=90):
     key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, domain)])
     now = datetime.datetime.now(datetime.timezone.utc)
     cert = (x509.CertificateBuilder().subject_name(name).issuer_name(name)
             .public_key(key.public_key()).serial_number(x509.random_serial_number())
             .not_valid_before(now - datetime.timedelta(minutes=5))
-            .not_valid_after(now + datetime.timedelta(days=90))
+            .not_valid_after(now + datetime.timedelta(days=days))
             .add_extension(x509.SubjectAlternativeName([x509.DNSName(domain)]), False)
             .sign(key, hashes.SHA256()))
     return cert, cert.public_bytes(serialization.Encoding.PEM).decode(), key.private_bytes(
@@ -40,6 +40,23 @@ class RenewalTests(unittest.TestCase):
             self.assertEqual(status['status'], 'not_due')
             cloud.assert_not_called()
             issue.assert_not_called()
+
+    def test_six_days_remaining_skips_issuance(self):
+        cert, _, _ = material(days=6)
+        with patch.object(renewal, 'live_certificate', return_value=cert), \
+                patch.object(renewal, 'issue') as issue:
+            result = renewal.handler(b'{}', NS(region='cn-beijing'))
+        self.assertEqual(result['status'], 'not_due')
+        issue.assert_not_called()
+
+    def test_four_days_remaining_renews_and_verifies(self):
+        old, _, _ = material(days=4)
+        fresh, chain, key = material()
+        with patch.object(renewal, 'live_certificate', side_effect=[old, fresh]), \
+                patch.object(renewal, 'issue', return_value=(chain, key)), \
+                patch.object(renewal, 'fc'):
+            result = renewal.handler(b'{}', NS(region='cn-beijing'))
+        self.assertEqual(result['status'], 'renewed')
 
     def test_staging_never_deploys_or_returns_keys(self):
         _, cert, key = material()
@@ -63,6 +80,19 @@ class RenewalTests(unittest.TestCase):
         self.assertEqual(args[0], renewal.DOMAIN)
         self.assertEqual(set(args[1].body.to_map()), {'certConfig'})
         self.assertNotIn('PRIVATE', json.dumps(status))
+
+    def test_deployment_retries_reuse_the_same_issued_certificate(self):
+        parsed, cert, key = material()
+        api = Mock()
+        api.update_custom_domain.side_effect = [RuntimeError(), RuntimeError(), None]
+        with patch.object(renewal, 'issue', return_value=(cert, key)) as issue, \
+                patch.object(renewal, 'fc', return_value=api), \
+                patch.object(renewal, 'live_certificate', return_value=parsed), \
+                patch.object(renewal.time, 'sleep'):
+            result = renewal.handler(b'{"action":"force_renew"}', NS(region='cn-beijing'))
+        self.assertEqual(result['status'], 'renewed')
+        self.assertEqual(issue.call_count, 1)
+        self.assertEqual(api.update_custom_domain.call_count, 3)
 
     def test_mismatched_hostname_is_never_deployed(self):
         _, cert, key = material('other.example.com')

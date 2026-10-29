@@ -156,7 +156,7 @@ def main():
     trigger = fc('GET', '/functions/' + MANAGER + '/triggers/time-trigger')
     config = json.loads(trigger['triggerConfig'])
     if not config.get('enable'):
-        raise RuntimeError('Daily Beijing timer is not enabled')
+        raise RuntimeError('Beijing renewal timer is not enabled')
     baseline = health()
     say('preflight', account=ACCOUNT, region=REGION, policy=POLICY,
         policies=sorted(original_policies), timer=config, live=baseline)
@@ -165,6 +165,7 @@ def main():
     BACKUP = Path(tempfile.mkdtemp(prefix='justsay-rollback-'))
     (BACKUP / 'domain.json').write_text(json.dumps(before))
     (BACKUP / 'policies.json').write_text(json.dumps(sorted(original_policies)))
+    (BACKUP / 'trigger.json').write_text(json.dumps(trigger))
     packages = {ISSUER: ROOT / 'cert-generator.zip', MANAGER: ROOT / 'cert-domain-manager.zip'}
     manifest = json.loads((ROOT / 'manifest.json').read_text())
     for name, package in packages.items():
@@ -178,7 +179,8 @@ def main():
             (BACKUP / (name + '.zip')).write_bytes(response.read())
     initial_records = dns_records()
     try:
-        attach(POLICY, 'Custom')
+        if ('Custom', POLICY) not in policies():
+            attach(POLICY, 'Custom')
         for name in BROAD:
             if ('System', name) in policies():
                 detach(name)
@@ -202,8 +204,14 @@ def main():
                 raise RuntimeError('DNS staging validation records were not cleaned up')
             if invoke(ISSUER, {'action': 'force_renew'}).get('status') != 'renewed':
                 raise RuntimeError('Production renewal failed')
-        if invoke(MANAGER, {}).get('status') != 'not_due':
-            raise RuntimeError('Daily manager check failed')
+        manager_status = invoke(MANAGER, {})
+        if manager_status.get('status') != 'not_due':
+            raise RuntimeError('Renewal manager check failed')
+        scheduled = fc('GET', '/functions/' + MANAGER + '/triggers/time-trigger')
+        scheduled_config = json.loads(scheduled['triggerConfig'])
+        if (not scheduled_config.get('enable') or
+                json.loads(scheduled_config.get('payload', '{}')).get('scheduledFor') != manager_status.get('nextRenewalAt')):
+            raise RuntimeError('Expiry-based renewal schedule was not saved')
         after = fc('GET', domain_path)
         for field in ('routeConfig', 'protocol', 'authConfig', 'tlsConfig', 'wafConfig'):
             if before.get(field) != after.get(field):
@@ -214,7 +222,8 @@ def main():
         if policies() != {('Custom', POLICY)}:
             raise RuntimeError('Role policy verification failed')
         say('complete', domain=DOMAIN, region=REGION, policy=POLICY, live=live,
-            timer_enabled=True, production_renewed=not args.verify_only, backup=str(BACKUP))
+            timer_enabled=True, next_renewal_at=manager_status['nextRenewalAt'],
+            production_renewed=not args.verify_only, backup=str(BACKUP))
     except BaseException:
         say('rollback_started')
         for name in BROAD:
@@ -226,6 +235,8 @@ def main():
         if before.get('certConfig', {}).get('privateKey'):
             restore['certConfig'] = before['certConfig']
         fc('PUT', domain_path, restore)
+        fc('PUT', '/functions/' + MANAGER + '/triggers/time-trigger',
+           {'triggerConfig': trigger['triggerConfig'], 'qualifier': trigger.get('qualifier', 'LATEST')})
         for name in packages:
             deploy(name, BACKUP / (name + '.zip'))
         if ('Custom', POLICY) not in original_policies:

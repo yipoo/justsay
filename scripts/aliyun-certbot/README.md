@@ -1,7 +1,7 @@
 # JustSay certificate renewal in Beijing
 
 > Active and verified on 2026-10-29. The execution role now has only custom
-> policy `JustSayCertificateRenewalBeijing` (default version `v2`). All three
+> policy `JustSayCertificateRenewalBeijing` (default version `v3`). All three
 > template FullAccess policies have been detached. Cutover used signed CLI API
 > calls from Alibaba Cloud Shell's existing identity; no long-lived AccessKey
 > was created or exported.
@@ -16,15 +16,26 @@ the template's certificate-store dependency and deployment permissions.
 - Issuer: `justsay-cert-generator`, Python 3.10, Certbot/ACME 5.8.0.
 - Timer manager: `justsay-cert-domain-manager`, Node.js 20.
 - Domain: `justsay.api.53kj.com`; application function: `justsay-api` in Beijing.
-- Timer: `time-trigger`, `LATEST`, enabled daily at **00:00 Asia/Shanghai**
-  (also 00:00 Singapore).
+- Timer: `time-trigger`, `LATEST`, rescheduled to **five days before certificate expiry**.
+  Current next renewal: **2027-01-22 10:05:24 Beijing/Singapore**.
 - Execution role: `fc-cap-role-73ha`.
 
 The manager invokes only the Beijing issuer's `LATEST` version. The issuer checks
-the live trusted TLS certificate over public HTTPS. With at least seven days
+the live trusted TLS certificate over public HTTPS. With at least five days
 remaining, it returns `not_due` without cloud writes. When due, it uses DNS-01 to
 issue a production certificate, updates only the exact Beijing domain's
-`certConfig`, and verifies the live certificate serial number.
+`certConfig`, and verifies the live certificate serial number. Only after successful online
+verification does the manager schedule the next expiry-derived date.
+
+Normal operation needs one scheduled execution per certificate cycle, with no
+daily polling. Short-lived failures are retried within the same invocation while
+there is enough runtime budget. Certificate deployment retries reuse the same
+signed certificate. If the execution still fails, the manager records
+`retry_scheduled` and sets a retry six hours later. This handled failure is
+acknowledged to avoid stacking immediate FC async retries on top of that explicit
+retry. If scheduling itself fails, it raises an error so FC can retry delivery.
+Each issuer retry first checks the live certificate, avoiding another order when
+a previous attempt already renewed it.
 
 No certificate is uploaded to CAS. The role no longer needs certificate-store
 list, download, upload, or delete permissions. Function responses contain status
@@ -36,12 +47,13 @@ are deleted after the invocation.
 
 [`ram-policy.json`](ram-policy.json) is the active replacement for the template's
 three broad policies (`AliyunDNSFullAccess`, `AliyunFCFullAccess`, and
-`AliyunYundunCertFullAccess`). Its five allowed actions are:
+`AliyunYundunCertFullAccess`). Its six allowed actions are:
 
 | Actions | Resource scope |
 | --- | --- |
 | `fc:InvokeFunction` | `justsay-cert-generator`, Beijing only; the timer invokes `LATEST` |
 | `fc:UpdateCustomDomain` | `justsay.api.53kj.com`, Beijing only |
+| `fc:UpdateTrigger` | The Beijing manager’s own `time-trigger` only |
 | `alidns:DescribeDomainRecords`, `alidns:AddDomainRecord`, `alidns:DeleteDomainRecord` | DNS zone `53kj.com` only |
 
 There are no wildcard resource grants, RAM permissions, code/deployment changes,
@@ -97,12 +109,18 @@ suffix in this deployment. The policy grants that exact function ARN; using only
 
 Issuer test events:
 
-- `{}`: ordinary daily check, no issuance unless fewer than seven days remain.
+- `{}`: ordinary renewal check, no issuance unless fewer than five days remain.
 - `{"action":"verify_isolation"}`: confirm `fc:ListFunctions` is denied; metadata only.
 - `{"action":"dry_run"}`: real DNS-01 issuance against Let's Encrypt **staging**;
   never installs the untrusted certificate.
 - `{"action":"force_renew"}`: maintenance-only production issuance and binding.
   Use sparingly because Let's Encrypt rate limits apply.
+
+FC timers use six-field cron expressions. The manager sets the exact upcoming
+UTC month/day/time and carries the full UTC date in the payload; the date is
+replaced on each successful cycle. For deployment through `s.yaml`, explicitly
+supply `JUSTSAY_RENEWAL_CRON` and `JUSTSAY_RENEWAL_PAYLOAD` from the current timer.
+There is no static daily fallback that could overwrite the schedule.
 
 Invoke the manager with `{}` after applying the restricted policy. A successful
 `not_due` check verifies invocation and public TLS, but does **not** prove DNS or
@@ -131,17 +149,19 @@ source and policy documents only. No cloud access key is stored in GitHub.
 
 - Both functions are deployed to Beijing, using the restricted role.
 - RAM lists only custom policy `JustSayCertificateRenewalBeijing`; no FullAccess
-  policy remains attached. The five actions and resource scopes are in the JSON.
+  policy remains attached. The six actions and resource scopes are in the JSON.
 - Real DNS-01 staging issuance and production issuance/binding succeeded with the
   restricted DNS and domain-update permissions. DNS records were cleaned up.
 - After correcting the invocation ARN, a fresh restricted runtime confirmed that
-  `fc:ListFunctions` is denied, and the daily manager returned `not_due` normally.
+  `fc:ListFunctions` is denied, and the renewal manager returned `not_due` normally.
   A second production order was deliberately avoided during this invocation fix.
-- The enabled timer remains daily at 00:00 Beijing/Singapore. This verifies manual
-  execution of its function chain; it does not claim a scheduled run has occurred.
+- The enabled timer is no longer daily. It is set to UTC cron `24 5 2 22 1 *`,
+  with payload `scheduledFor=2027-01-22T02:05:24.000Z`. The manager updates that
+  date and cron after each successful renewal. This verifies manual execution
+  and timer persistence; no future scheduled run is claimed to have occurred.
 - Public HTTPS trusts Let's Encrypt **YR2**, serial
   `06D08AA856D767134B8263A75F43657CE9B9`, expiring **2027-01-27 02:05:24 UTC**
   (**10:05:24 Beijing/Singapore**). `/health` returned HTTP 200 and `{"ok":true}`.
 - Route, protocol, authentication, TLS and WAF settings were checked and preserved.
-- Seven local regression tests and GitHub CI passed. GitHub retains zero repository
+- Ten Python tests and five Node scheduling/retry tests passed locally. GitHub retains zero repository
   Secrets, and the alternative renewal workflow remains manually disabled.

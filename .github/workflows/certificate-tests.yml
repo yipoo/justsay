@@ -38,3 +38,4 @@ jobs:
         working-directory: scripts/aliyun-certbot/fc-domain-manager
       - run: node -e 'require("./index.js").handler({}, {region:"cn-hangzhou"}).then(() => process.exit(1)).catch(e => {if(e.message!=="Expected cn-beijing") throw e;})'
         working-directory: scripts/aliyun-certbot/fc-domain-manager
+      - run: node --test scripts/aliyun-certbot/tests/manager.test.js

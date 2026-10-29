@@ -19,6 +19,11 @@
         "alidns:DeleteDomainRecord"
       ],
       "Resource": "acs:alidns::1722755712126869:domain/53kj.com"
+    },
+    {
+      "Effect": "Allow",
+      "Action": "fc:UpdateTrigger",
+      "Resource": "acs:fc:cn-beijing:1722755712126869:functions/justsay-cert-domain-manager/triggers/time-trigger"
     }
   ]
 }

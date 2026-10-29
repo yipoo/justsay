@@ -47,6 +47,7 @@ resources:
           qualifier: LATEST
           triggerType: timer
           triggerConfig:
-            payload: ""
-            cronExpression: CRON_TZ=Asia/Shanghai 0 0 0 * * *
+            # Supply the current expiry-derived values; no daily fallback.
+            payload: ${env('JUSTSAY_RENEWAL_PAYLOAD')}
+            cronExpression: ${env('JUSTSAY_RENEWAL_CRON')}
             enable: true

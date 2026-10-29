@@ -44,7 +44,7 @@ def fc():
         access_key_secret=os.environ["ALIBABA_CLOUD_ACCESS_KEY_SECRET"],
         security_token=os.environ["ALIBABA_CLOUD_SECURITY_TOKEN"],
         endpoint=f"{ACCOUNT}.{REGION}.fc.aliyuncs.com", region_id=REGION,
-        connect_timeout=30000, read_timeout=60000))
+        connect_timeout=10000, read_timeout=20000))
 
 
 def validate_material(chain, key):
@@ -76,7 +76,7 @@ def issue(root, staging):
             "--register-unsafely-without-email", "--quiet", "--server",
             STAGING if staging else PRODUCTION]
     # Separate process prevents Certbot from enabling SDK upload debug logs.
-    result = subprocess.run(args, env=env, capture_output=True, timeout=700)
+    result = subprocess.run(args, env=env, capture_output=True, timeout=600)
     if result.returncode:
         stderr = result.stderr.decode(errors="replace")
         category = next((code for code in ("AccessDenied", "NoPermission", "Forbidden",
@@ -114,7 +114,7 @@ def handler(event, context):
                 raise RuntimeError("Live TLS verification failed") from None
         else:
             remaining = current.not_valid_after_utc - datetime.datetime.now(datetime.timezone.utc)
-            if remaining.total_seconds() >= 7 * 86400:
+            if remaining.total_seconds() >= 5 * 86400:
                 return {"domain": DOMAIN, "region": REGION, "status": "not_due",
                         "expires": current.not_valid_after_utc.isoformat()}
     with tempfile.TemporaryDirectory(prefix="justsay-acme-") as folder:
@@ -124,15 +124,25 @@ def handler(event, context):
             return {"domain": DOMAIN, "region": REGION, "status": "staging_validated",
                     "deployed": False}
         quiet_logs()
-        try:
-            fc().update_custom_domain(DOMAIN, models.UpdateCustomDomainRequest(
-                body=models.UpdateCustomDomainInput(cert_config=models.CertConfig(
-                    cert_name=CERT_NAME, certificate=chain, private_key=pkcs1))))
-        except Exception:
-            raise RuntimeError("Updating the Beijing domain certificate failed") from None
-        for _ in range(24):
-            if live_certificate().serial_number == cert.serial_number:
+        for attempt in range(3):
+            try:
+                fc().update_custom_domain(DOMAIN, models.UpdateCustomDomainRequest(
+                    body=models.UpdateCustomDomainInput(cert_config=models.CertConfig(
+                        cert_name=CERT_NAME, certificate=chain, private_key=pkcs1))))
+                break
+            except Exception:
+                if attempt == 2:
+                    raise RuntimeError("Updating the Beijing domain certificate failed") from None
+                # Reuse this signed certificate when deployment has a transient failure.
+                time.sleep((attempt + 1) * 5)
+        verify_until = time.monotonic() + 60
+        while time.monotonic() < verify_until:
+            try:
+                matches = live_certificate().serial_number == cert.serial_number
+            except (OSError, ssl.SSLError):
+                matches = False
+            if matches:
                 return {"domain": DOMAIN, "region": REGION, "status": "renewed",
                         "expires": cert.not_valid_after_utc.isoformat()}
-            time.sleep(5)
+            time.sleep(3)
         raise RuntimeError("Live certificate did not update before verification timed out")
