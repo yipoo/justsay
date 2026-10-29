@@ -78,7 +78,10 @@ def issue(root, staging):
     # Separate process prevents Certbot from enabling SDK upload debug logs.
     result = subprocess.run(args, env=env, capture_output=True, timeout=700)
     if result.returncode:
-        raise RuntimeError(f"Certbot DNS validation failed (exit {result.returncode})")
+        stderr = result.stderr.decode(errors="replace")
+        category = next((code for code in ("AccessDenied", "NoPermission", "Forbidden",
+                        "ModuleNotFoundError", "NXDOMAIN", "Timeout") if code in stderr), "unknown")
+        raise RuntimeError(f"Certbot DNS validation failed: {category} (exit {result.returncode})")
     folder = root / "config" / "live" / DOMAIN
     return (folder / "fullchain.pem").read_text(), (folder / "privkey.pem").read_text()
 
@@ -91,8 +94,18 @@ def handler(event, context):
     if evt.get("domainName", DOMAIN) != DOMAIN:
         raise ValueError("Unexpected domain")
     action = evt.get("action", "check")
-    if action not in ("check", "dry_run", "force_renew"):
+    if action not in ("check", "dry_run", "force_renew", "verify_isolation"):
         raise ValueError("Unsupported action")
+    if action == "verify_isolation":
+        try:
+            fc().list_functions(models.ListFunctionsRequest(limit=1))
+        except Exception as error:
+            code = getattr(error, "code", "")
+            if "AccessDenied" not in code and "Forbidden" not in code:
+                raise RuntimeError("Unable to verify runtime permission isolation") from None
+            return {"domain": DOMAIN, "region": REGION, "status": "isolation_verified",
+                    "denied_action": "fc:ListFunctions"}
+        return {"domain": DOMAIN, "region": REGION, "status": "permissions_not_restricted"}
     if action == "check":
         try:
             current = live_certificate()

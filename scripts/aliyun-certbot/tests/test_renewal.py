@@ -71,6 +71,19 @@ class RenewalTests(unittest.TestCase):
             renewal.handler(b'{"action":"force_renew"}', NS(region='cn-beijing'))
         cloud.assert_not_called()
 
+    def test_isolation_probe_requires_real_access_denial(self):
+        class Denied(Exception):
+            code = 'AccessDenied'
+        api = Mock()
+        api.list_functions.side_effect = Denied()
+        with patch.object(renewal, 'fc', return_value=api):
+            result = renewal.handler(b'{"action":"verify_isolation"}', NS(region='cn-beijing'))
+        self.assertEqual(result['status'], 'isolation_verified')
+        api.list_functions.side_effect = None
+        with patch.object(renewal, 'fc', return_value=api):
+            result = renewal.handler(b'{"action":"verify_isolation"}', NS(region='cn-beijing'))
+        self.assertEqual(result['status'], 'permissions_not_restricted')
+
     def test_reject_other_region_and_hostname(self):
         for evt, region in [(b'{}', 'cn-hangzhou'),
                             (b'{"domainName":"other.example.com"}', 'cn-beijing')]:

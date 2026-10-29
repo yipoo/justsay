@@ -40,8 +40,8 @@ def hook(cleanup=False):
     if not matching:
         api.add_domain_record(models.AddDomainRecordRequest(
             domain_name=ZONE, rr=RR, type="TXT", value=value, ttl=600))
-    resolver = dns.resolver.Resolver(configure=False)
-    resolver.nameservers = ["223.5.5.5", "119.29.29.29"]
+    # Use FC's reachable DNS resolvers rather than assuming public UDP egress.
+    resolver = dns.resolver.Resolver()
     for _ in range(36):
         try:
             answers = resolver.resolve(f"{RR}.{ZONE}", "TXT", lifetime=5)
